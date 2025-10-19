@@ -1,0 +1,8 @@
+{
+  "name": "JengaV - Live Conversation Skill Coach",
+  "description": "An AI-driven coach that provides real-time feedback on your speech, tone, and posture during live conversations, interviews, and presentations. It uses subtle nudges and on-screen highlights to help you eliminate filler words, strengthen your language, and project confidence.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
