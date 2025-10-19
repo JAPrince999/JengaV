@@ -55,6 +55,7 @@ JengaV is an intelligent conversation skill coach that uses cutting-edge AI to h
 - **Session history** to track your improvement over time
 - **Onboarding tutorials** for each mode
 - **Firebase authentication** for secure data storage
+- **Full mobile support** with touch-optimized controls and mobile-specific audio handling
 - **Cross-platform compatibility**
 
 ## 🚀 Quick Start
