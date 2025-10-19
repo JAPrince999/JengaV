@@ -80,6 +80,7 @@ interface SpeechRecognition extends EventTarget {
   onerror: ((this: SpeechRecognition, ev: SpeechRecognitionErrorEvent) => any) | null;
   start(): void;
   stop(): void;
+  abort(): void;
 }
 
 declare global {
@@ -91,6 +92,45 @@ declare global {
     webkitAudioContext: typeof AudioContext;
   }
 }
+
+// Mobile browser detection and compatibility utilities
+const isMobileBrowser = (): boolean => {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+         (window.innerWidth <= 768 && window.innerHeight <= 1024);
+};
+
+const isIOS = (): boolean => {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent);
+};
+
+const isAndroid = (): boolean => {
+  return /Android/i.test(navigator.userAgent);
+};
+
+const isHttpsOrLocalhost = (): boolean => {
+  return window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+};
+
+const checkMicrophonePermission = async (): Promise<boolean> => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Immediately stop the test stream
+    stream.getTracks().forEach(track => track.stop());
+    return true;
+  } catch (error) {
+    console.error('Microphone permission check failed:', error);
+    return false;
+  }
+};
+
+const getSupportedSpeechRecognition = (): { SpeechRecognition: any; isSupported: boolean } => {
+  // Check for standard Speech Recognition API
+  if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+    const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+    return { SpeechRecognition: SpeechRecognitionAPI, isSupported: true };
+  }
+  return { SpeechRecognition: null, isSupported: false };
+};
 
 // Custom Pose Connections for clear visualization
 const GREEN_CONNECTIONS = [
@@ -141,6 +181,8 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
   const [isAiGeneratingText, setIsAiGeneratingText] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [isEnding, setIsEnding] = useState(false);
+  const [isSetupComplete, setIsSetupComplete] = useState(false);
+  const [setupError, setSetupError] = useState<string | null>(null);
   const transcriptRef = useRef(transcript);
   useEffect(() => {
     transcriptRef.current = transcript;
@@ -155,12 +197,12 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
   const isRecordingRef = useRef(isRecording);
   const currentUtteranceStartIndexRef = useRef(0);
   const isProcessingFinalResultRef = useRef(false);
-  
+
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const animationFrameIdRef = useRef<number | null>(null);
   const postureReadingsRef = useRef<('good' | 'slouching')[]>([]);
   const confidenceScoresRef = useRef<number[]>([]);
-  
+
   const silenceTimerRef = useRef<number | null>(null);
   const currentUserSpeechRef = useRef<string>('');
 
@@ -168,10 +210,289 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
   const postureStateRef = useRef<'good' | 'slouching'>('good');
   const vocalClarityStateRef = useRef<'good' | 'average' | 'poor'>('good');
   const outputAudioContextRef = useRef<AudioContext | null>(null);
-  
+
   const [isTourOpen, setIsTourOpen] = useState(!hasSeenOnboardingTour);
 
   const isCameraEnabled = mode === SessionMode.CONVERSATIONAL_WITH_VIDEO || mode === SessionMode.NOTAK_WITH_VIDEO;
+
+  // Enhanced setup session with mobile-specific error handling
+  const setupSessionWithErrorHandling = useCallback(async () => {
+    const performSetup = async () => {
+      // Check if we're on HTTPS or localhost for mobile browsers
+      if (isMobileBrowser() && !isHttpsOrLocalhost()) {
+        alert("For mobile devices, please access this app over HTTPS for microphone access. If testing locally, use http://localhost or https://localhost.");
+        return;
+      }
+
+      // Check microphone permission first
+      const hasMicPermission = await checkMicrophonePermission();
+      if (!hasMicPermission) {
+        alert("Microphone access is required for this app. Please allow microphone permissions and refresh the page.");
+        return;
+      }
+
+      // For mobile browsers, we need to initialize audio context after user gesture
+      // This will be handled in the useEffect when recording starts
+
+      // Get audio stream for mobile compatibility
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: isCameraEnabled,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: { ideal: 44100 },
+            channelCount: { ideal: 1 }
+          }
+        });
+      } catch (audioError) {
+        console.error("Audio stream error:", audioError);
+        // Try without specific audio constraints for mobile compatibility
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: isCameraEnabled,
+          audio: true
+        });
+      }
+
+      mediaStreamRef.current = stream;
+
+      if (isCameraEnabled && videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+            animationFrameIdRef.current = requestAnimationFrame(predictWebcam);
+        };
+
+        try {
+          const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+          const poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+              delegate: isMobileBrowser() ? "CPU" : "GPU" // Use CPU for mobile for better compatibility
+            },
+            runningMode: "VIDEO",
+            numPoses: 1
+          });
+          poseLandmarkerRef.current = poseLandmarker;
+        } catch (poseError) {
+          console.error("Pose landmarker initialization failed:", poseError);
+          // Continue without pose detection if it fails
+        }
+      }
+
+      // Initialize audio context for TTS
+      if (mode.startsWith('CONVERSATIONAL')) {
+        try {
+          // Resume audio context for mobile browsers (required after user gesture)
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          outputAudioContextRef.current = new AudioContextClass({
+            sampleRate: 24000,
+            latencyHint: isMobileBrowser() ? 'interactive' : 'balanced'
+          });
+
+          // Resume audio context if suspended (common on mobile)
+          if (outputAudioContextRef.current.state === 'suspended') {
+            await outputAudioContextRef.current.resume();
+          }
+        } catch (audioContextError) {
+          console.error("Audio context initialization failed:", audioContextError);
+          alert("Audio playback may not work properly on this device. Please try a different browser.");
+        }
+      }
+
+      // Check for speech recognition support with mobile-specific handling
+      const { SpeechRecognition: SpeechRecognitionAPI, isSupported } = getSupportedSpeechRecognition();
+
+      if (!isSupported) {
+        const mobileMessage = isMobileBrowser()
+          ? "Speech recognition is not fully supported on this mobile browser. Please try Chrome, Safari (iOS), or Edge for the best experience."
+          : "Speech recognition is not supported in this browser. Please try Chrome or Edge.";
+        alert(mobileMessage);
+        return;
+      }
+
+      const recognition = new SpeechRecognitionAPI();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      // Add mobile-specific settings
+      if (isMobileBrowser()) {
+        // Reduce sensitivity and increase timeout for mobile
+        recognition.maxAlternatives = 1;
+        // Some mobile browsers work better with shorter continuous recognition
+        if (isIOS()) {
+          recognition.continuous = false; // iOS Safari works better with non-continuous mode
+        }
+      }
+
+      recognitionRef.current = recognition;
+
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+
+        let fullTranscriptForCurrentUtterance = '';
+        let isFinal = false;
+        let finalConfidence = 0;
+
+        // Handle mobile-specific result processing
+        if (isIOS()) {
+          // iOS Safari handles interim results differently
+          for (let i = 0; i < event.results.length; ++i) {
+            const result = event.results[i];
+            if (result.isFinal || i === event.results.length - 1) {
+              fullTranscriptForCurrentUtterance = result[0].transcript;
+              isFinal = result.isFinal;
+              finalConfidence = result[0].confidence;
+              break;
+            }
+          }
+        } else {
+          // Standard handling for other browsers
+          for (let i = currentUtteranceStartIndexRef.current; i < event.results.length; ++i) {
+            fullTranscriptForCurrentUtterance += event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              isFinal = true;
+              finalConfidence = event.results[i][0].confidence;
+            }
+          }
+        }
+
+        const analyzedWords = analyzeText(currentUserSpeechRef.current + ' ' + fullTranscriptForCurrentUtterance);
+
+        setTranscript(prev => {
+            const newTranscript = [...prev];
+            let lastEntry = newTranscript[newTranscript.length - 1];
+
+            if (!lastEntry || lastEntry.speaker !== 'user') {
+                newTranscript.push({
+                    speaker: 'user',
+                    words: analyzedWords,
+                    timestamp: new Date()
+                });
+            } else {
+                newTranscript[newTranscript.length - 1] = {
+                    ...lastEntry,
+                    words: analyzedWords,
+                    timestamp: new Date()
+                };
+            }
+            return newTranscript;
+        });
+
+        if (isFinal) {
+          if (isProcessingFinalResultRef.current) return;
+
+          if (isAiFeedbackEnabled && finalConfidence > 0) {
+            confidenceScoresRef.current.push(finalConfidence);
+            if (finalConfidence > 0.9) vocalClarityStateRef.current = 'good';
+            else if (finalConfidence > 0.7) vocalClarityStateRef.current = 'average';
+            else vocalClarityStateRef.current = 'poor';
+            setTimeout(() => { vocalClarityStateRef.current = 'good'; }, 2000);
+          }
+
+          const finalPhrase = fullTranscriptForCurrentUtterance.trim();
+          currentUserSpeechRef.current += finalPhrase + ' ';
+
+          if (isIOS()) {
+            // For iOS, update the start index differently
+            currentUtteranceStartIndexRef.current = event.results.length;
+          } else {
+            currentUtteranceStartIndexRef.current = event.resultIndex + 1;
+          }
+
+          if (mode.startsWith('CONVERSATIONAL')) {
+              silenceTimerRef.current = window.setTimeout(() => {
+                if (isProcessingFinalResultRef.current) return;
+                const fullTurnText = currentUserSpeechRef.current.trim();
+                if (fullTurnText.length > 0) {
+                    isProcessingFinalResultRef.current = true;
+                    setIsRecording(false);
+                    if (mode === SessionMode.CONVERSATIONAL_WITH_DEMO) {
+                        getAiRephrasingResponse(fullTurnText);
+                    } else {
+                        getAiConversationalResponse(fullTurnText);
+                    }
+                }
+            }, isMobileBrowser() ? 2000 : 1500); // Longer timeout for mobile
+          }
+        }
+      };
+
+      recognition.onend = () => {
+        // Add retry logic for mobile browsers
+        if (isRecordingRef.current && !isAiSpeaking) {
+          try {
+            // Add a small delay before restarting to avoid rapid restart loops
+            setTimeout(() => {
+              if (isRecordingRef.current && !isAiSpeaking && recognitionRef.current) {
+                recognitionRef.current.start();
+              }
+            }, 100);
+          } catch (error) {
+            console.error("Failed to restart speech recognition:", error);
+          }
+        }
+      };
+
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+        console.error("Speech recognition error:", event.error, event.message);
+
+        // Handle mobile-specific errors
+        if (isMobileBrowser()) {
+          if (event.error === 'not-allowed') {
+            alert("Microphone access was denied. Please allow microphone permissions in your browser settings and refresh the page.");
+            return;
+          } else if (event.error === 'no-speech') {
+            // This is common on mobile, just restart
+            if (isRecordingRef.current && !isAiSpeaking) {
+              setTimeout(() => recognitionRef.current?.start(), 500);
+            }
+            return;
+          } else if (event.error === 'network') {
+            alert("Network error detected. Please check your internet connection and try again.");
+            return;
+          }
+        }
+
+        // For non-mobile or other errors, use the original logic
+        if (event.error === 'no-speech') {
+          // benign, ignore
+        } else {
+          console.error("Speech recognition error that may need attention:", event.error);
+        }
+      };
+
+      if (mode.startsWith('CONVERSATIONAL') && mode !== SessionMode.CONVERSATIONAL_WITH_DEMO) {
+        const aiGreeting: TranscriptEntry = {
+          speaker: 'ai',
+          words: analyzeText(`Hello! Welcome to your ${category} preparation. Let's begin. Tell me about yourself.`),
+          timestamp: new Date()
+        };
+        setTranscript([aiGreeting]);
+      } else {
+         setTranscript([{ speaker: 'user', words: [], timestamp: new Date() }]);
+      }
+    };
+
+    try {
+      setSetupError(null);
+      await performSetup();
+      setIsSetupComplete(true);
+    } catch (error) {
+      console.error("Session setup failed:", error);
+      let errorMessage = "Failed to initialize the session. ";
+
+      if (isMobileBrowser()) {
+        errorMessage += "Please ensure you're using a modern mobile browser (Chrome, Safari, or Edge) and have granted microphone permissions.";
+      } else {
+        errorMessage += "Please check your browser permissions and try again.";
+      }
+
+      setSetupError(errorMessage);
+    }
+  }, [mode, category, isCameraEnabled, isAiFeedbackEnabled]);
   
   const handleCloseTour = () => {
     setIsTourOpen(false);
@@ -182,6 +503,21 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
     isRecordingRef.current = val;
     _setIsRecording(val);
   };
+
+  const handleToggleRecording = useCallback(() => {
+    if (!isSetupComplete && !setupError) {
+      // If setup is not complete and no error, show a loading state
+      alert("Please wait for the session to initialize...");
+      return;
+    }
+
+    if (setupError) {
+      alert(setupError);
+      return;
+    }
+
+    setIsRecording(!isRecording);
+  }, [isRecording, isSetupComplete, setupError]);
 
   const analyzePosture = useCallback((landmarks: any[]) => {
     let newPosture: 'good' | 'slouching' = 'good';
@@ -626,152 +962,35 @@ Your response as the coach:`;
     }
   }, [category, handleAiFailure, onApiKeyInvalid]);
 
-  const setupSession = useCallback(async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: isCameraEnabled, audio: true });
-      mediaStreamRef.current = stream;
-      if (isCameraEnabled && videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-            animationFrameIdRef.current = requestAnimationFrame(predictWebcam);
-        };
-      
-        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-        const poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          numPoses: 1
-        });
-        poseLandmarkerRef.current = poseLandmarker;
-      }
-
-      if (mode.startsWith('CONVERSATIONAL')) {
-        outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-      }
-
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        alert("Speech recognition is not supported in this browser. Please try Chrome or Edge.");
-        return;
-      }
-      
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      recognitionRef.current = recognition;
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        
-        let fullTranscriptForCurrentUtterance = '';
-        let isFinal = false;
-        let finalConfidence = 0;
-
-        for (let i = currentUtteranceStartIndexRef.current; i < event.results.length; ++i) {
-          fullTranscriptForCurrentUtterance += event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            isFinal = true;
-            finalConfidence = event.results[i][0].confidence;
-          }
-        }
-        
-        const analyzedWords = analyzeText(currentUserSpeechRef.current + ' ' + fullTranscriptForCurrentUtterance);
-
-        setTranscript(prev => {
-            const newTranscript = [...prev];
-            let lastEntry = newTranscript[newTranscript.length - 1];
-            
-            if (!lastEntry || lastEntry.speaker !== 'user') {
-                newTranscript.push({
-                    speaker: 'user',
-                    words: analyzedWords,
-                    timestamp: new Date()
-                });
-            } else {
-                newTranscript[newTranscript.length - 1] = {
-                    ...lastEntry,
-                    words: analyzedWords,
-                    timestamp: new Date()
-                };
-            }
-            return newTranscript;
-        });
-
-        if (isFinal) {
-          if (isProcessingFinalResultRef.current) return;
-
-          if (isAiFeedbackEnabled && finalConfidence > 0) {
-            confidenceScoresRef.current.push(finalConfidence);
-            if (finalConfidence > 0.9) vocalClarityStateRef.current = 'good';
-            else if (finalConfidence > 0.7) vocalClarityStateRef.current = 'average';
-            else vocalClarityStateRef.current = 'poor';
-            setTimeout(() => { vocalClarityStateRef.current = 'good'; }, 2000);
-          }
-          
-          const finalPhrase = event.results[event.results.length - 1][0].transcript.trim();
-          currentUserSpeechRef.current += finalPhrase + ' ';
-          currentUtteranceStartIndexRef.current = event.resultIndex + 1;
-
-          if (mode.startsWith('CONVERSATIONAL')) {
-              silenceTimerRef.current = window.setTimeout(() => {
-                if (isProcessingFinalResultRef.current) return;
-                const fullTurnText = currentUserSpeechRef.current.trim();
-                if (fullTurnText.length > 0) {
-                    isProcessingFinalResultRef.current = true;
-                    setIsRecording(false);
-                    if (mode === SessionMode.CONVERSATIONAL_WITH_DEMO) {
-                        getAiRephrasingResponse(fullTurnText);
-                    } else {
-                        getAiConversationalResponse(fullTurnText);
-                    }
-                }
-            }, 1500);
-          }
-        }
-      };
-      
-      recognition.onend = () => {
-        if (isRecordingRef.current && !isAiSpeaking) {
-          recognitionRef.current?.start();
-        }
-      };
-      
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.error("Speech recognition error:", event.error);
-        if (event.error === 'no-speech') { /* benign, ignore */ }
-      };
-
-      if (mode.startsWith('CONVERSATIONAL') && mode !== SessionMode.CONVERSATIONAL_WITH_DEMO) {
-        const aiGreeting: TranscriptEntry = {
-          speaker: 'ai',
-          words: analyzeText(`Hello! Welcome to your ${category} preparation. Let's begin. Tell me about yourself.`),
-          timestamp: new Date()
-        };
-        setTranscript([aiGreeting]);
-      } else {
-         setTranscript([{ speaker: 'user', words: [], timestamp: new Date() }]);
-      }
-
-    } catch (err) {
-      console.error("Error setting up session.", err);
-      alert("Could not access camera/microphone or failed to load resources. Please check permissions and refresh.");
-    }
-  }, [category, mode, predictWebcam, isCameraEnabled, getAiConversationalResponse, getAiRephrasingResponse, isAiFeedbackEnabled]);
   
   useEffect(() => {
       if (isRecording) {
+          // Initialize audio context on user gesture (required for mobile)
+          if (mode.startsWith('CONVERSATIONAL') && !outputAudioContextRef.current) {
+              try {
+                  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                  outputAudioContextRef.current = new AudioContextClass({
+                      sampleRate: 24000,
+                      latencyHint: isMobileBrowser() ? 'interactive' : 'balanced'
+                  });
+
+                  // Resume audio context if suspended (common on mobile)
+                  if (outputAudioContextRef.current.state === 'suspended') {
+                      outputAudioContextRef.current.resume().catch(console.error);
+                  }
+              } catch (error) {
+                  console.error("Failed to initialize audio context:", error);
+              }
+          }
+
           recognitionRef.current?.start();
       } else {
           recognitionRef.current?.stop();
       }
-  }, [isRecording]);
+  }, [isRecording, mode]);
 
   useEffect(() => {
-    setupSession();
+    setupSessionWithErrorHandling();
 
     return () => {
       setIsRecording(false);
@@ -789,7 +1008,7 @@ Your response as the coach:`;
         outputAudioContextRef.current.close();
       }
     };
-  }, [setupSession]);
+  }, [setupSessionWithErrorHandling]);
 
   const getWordClass = (category: WordCategory) => {
     switch (category) {
@@ -869,7 +1088,7 @@ Your response as the coach:`;
                 />
             </div>
             <div className="flex items-center space-x-2">
-                <Button onClick={() => setIsRecording(!isRecording)} className="bg-white/10 hover:bg-white/20" disabled={isAiSpeaking || isEnding}>
+                <Button onClick={handleToggleRecording} className="bg-white/10 hover:bg-white/20" disabled={isAiSpeaking || isEnding || (!isSetupComplete && !setupError)}>
                     <MicIcon className={`mr-2 h-4 w-4 ${isRecording ? 'text-red-400 animate-pulse' : ''}`} />
                     {isAiSpeaking ? 'AI Speaking...' : (isRecording ? 'Recording...' : (isConversational ? 'Record Answer' : 'Start Speaking'))}
                 </Button>
@@ -880,6 +1099,18 @@ Your response as the coach:`;
             </div>
         </div>
       </header>
+
+      {setupError && (
+        <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 mb-4 text-red-200 z-10">
+          <div className="flex items-center">
+            <div className="w-5 h-5 rounded-full bg-red-500 mr-3 flex-shrink-0"></div>
+            <div>
+              <h3 className="font-semibold">Setup Error</h3>
+              <p className="text-sm mt-1">{setupError}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className={`flex-1 grid ${isCameraEnabled ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'} gap-6 min-h-0 z-10`}>
         {isCameraEnabled && (
