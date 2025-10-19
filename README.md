@@ -34,14 +34,13 @@ JengaV is an intelligent conversation skill coach that uses cutting-edge AI to h
 ### 🔧 Session Modes
 - **Audio Only** - Focus purely on speech analysis
 - **With Video** - Include posture and facial expression analysis
-- **Demo Mode** - Practice with pre-recorded scenarios
+- **Demo Mode** - Practice scenarios and receive real-time suggestions
 
 ### 🤖 AI-Powered Analysis
 - **Real-time speech analysis** using advanced natural language processing
 - **Computer vision** for posture and body language feedback
 - **Tone analysis** for emotional intelligence insights
 - **Pronunciation scoring** and feedback
-- **Smart nudges** during conversations to improve in real-time
 
 ### 📊 Comprehensive Scoring
 - **Overall communication score** (0-100)
