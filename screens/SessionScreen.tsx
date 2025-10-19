@@ -172,6 +172,9 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   
   const [isTourOpen, setIsTourOpen] = useState(!hasSeenOnboardingTour);
+  const [isSpeechRecognitionReady, setIsSpeechRecognitionReady] = useState(false);
+  const [isWaitingForPermissions, setIsWaitingForPermissions] = useState(false);
+  const [recordingStatus, setRecordingStatus] = useState<'idle' | 'starting' | 'recording' | 'error'>('idle');
 
   const isCameraEnabled = mode === SessionMode.CONVERSATIONAL_WITH_VIDEO || mode === SessionMode.NOTAK_WITH_VIDEO;
   
@@ -179,6 +182,92 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
     setIsTourOpen(false);
     onOnboardingComplete();
   };
+
+  const initializeSpeechRecognition = useCallback(async () => {
+    if (isSpeechRecognitionReady) return;
+
+    try {
+      setRecordingStatus('starting');
+      setIsWaitingForPermissions(true);
+
+      // Check for secure context on mobile devices
+      if (isMobileDevice() && !ensureSecureContext()) {
+        alert('This app requires HTTPS to work properly on mobile devices. Please access it via a secure connection.');
+        setRecordingStatus('error');
+        return;
+      }
+
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        const mobileMessage = isMobileDevice()
+          ? "Speech recognition is not supported on this mobile device. Please use Chrome, Safari, or Edge."
+          : "Speech recognition is not supported in this browser. Please try Chrome or Edge.";
+        alert(mobileMessage);
+        setRecordingStatus('error');
+        return;
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      // Mobile-specific optimizations
+      if (isMobileDevice()) {
+        // Mobile devices may handle speech recognition differently
+        silenceTimerRef.current = null;
+      }
+
+      recognitionRef.current = recognition;
+      setIsSpeechRecognitionReady(true);
+      setRecordingStatus('idle');
+      setIsWaitingForPermissions(false);
+
+      console.log('Speech recognition initialized successfully');
+
+    } catch (error) {
+      console.error('Failed to initialize speech recognition:', error);
+      setRecordingStatus('error');
+      setIsWaitingForPermissions(false);
+    }
+  }, [isSpeechRecognitionReady]);
+
+  const startRecording = useCallback(async () => {
+    if (!recognitionRef.current || !isSpeechRecognitionReady) {
+      await initializeSpeechRecognition();
+      if (!isSpeechRecognitionReady) return;
+    }
+
+    try {
+      setRecordingStatus('recording');
+      setIsRecording(true);
+      recognitionRef.current.start();
+      console.log('Recording started');
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      setRecordingStatus('error');
+
+      // Provide specific error messages for common issues
+      if (error instanceof Error) {
+        if (error.name === 'NotAllowedError') {
+          alert('Microphone access denied. Please allow microphone permissions in your browser settings and try again.');
+        } else if (error.name === 'NotFoundError') {
+          alert('No microphone found. Please connect a microphone and try again.');
+        } else {
+          alert(`Recording error: ${error.message}`);
+        }
+      }
+    }
+  }, [isSpeechRecognitionReady, initializeSpeechRecognition]);
+
+  const stopRecording = useCallback(() => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      setRecordingStatus('idle');
+      setIsRecording(false);
+      console.log('Recording stopped');
+    }
+  }, []);
 
   const setIsRecording = (val: boolean) => {
     isRecordingRef.current = val;
@@ -697,50 +786,61 @@ Your response as the coach:`;
         }
       }
 
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        const mobileMessage = isMobileDevice()
-          ? "Speech recognition is not supported on this mobile device. Please use Chrome, Safari, or Edge."
-          : "Speech recognition is not supported in this browser. Please try Chrome or Edge.";
-        alert(mobileMessage);
-        return;
+      // Speech recognition event handlers will be set up separately
+
+      if (mode.startsWith('CONVERSATIONAL') && mode !== SessionMode.CONVERSATIONAL_WITH_DEMO) {
+        const aiGreeting: TranscriptEntry = {
+          speaker: 'ai',
+          words: analyzeText(`Hello! Welcome to your ${category} preparation. Let's begin. Tell me about yourself.`),
+          timestamp: new Date()
+        };
+        setTranscript([aiGreeting]);
+      } else {
+         setTranscript([{ speaker: 'user', words: [], timestamp: new Date() }]);
       }
 
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-
-      // Mobile-specific optimizations
-      if (isMobileDevice()) {
-        // Mobile devices may handle speech recognition differently
-        // We'll handle mobile-specific behavior in the event handlers
-        silenceTimerRef.current = null; // We'll handle this differently for mobile
+    } catch (err) {
+      console.error("Error setting up session.", err);
+      alert("Could not access camera/microphone or failed to load resources. Please check permissions and refresh.");
+    }
+  }, [category, mode, predictWebcam, isCameraEnabled, getAiConversationalResponse, getAiRephrasingResponse, isAiFeedbackEnabled]);
+  
+  useEffect(() => {
+    if (recognitionRef.current) {
+      if (isRecording) {
+        recognitionRef.current.start();
+      } else {
+        recognitionRef.current.stop();
       }
+    }
+  }, [isRecording]);
 
-      recognitionRef.current = recognition;
-
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
+  // Set up speech recognition event handlers when recognition is ready
+  useEffect(() => {
+    if (recognitionRef.current && isSpeechRecognitionReady) {
+      recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
         if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        
+
         let fullTranscriptForCurrentUtterance = '';
         let isFinal = false;
         let finalConfidence = 0;
 
         for (let i = currentUtteranceStartIndexRef.current; i < event.results.length; ++i) {
-          fullTranscriptForCurrentUtterance += event.results[i][0].transcript;
+          const transcript = event.results[i][0].transcript;
+          fullTranscriptForCurrentUtterance += transcript;
           if (event.results[i].isFinal) {
             isFinal = true;
             finalConfidence = event.results[i][0].confidence;
           }
         }
-        
+
+        // Update transcript in real-time
         const analyzedWords = analyzeText(currentUserSpeechRef.current + ' ' + fullTranscriptForCurrentUtterance);
 
         setTranscript(prev => {
             const newTranscript = [...prev];
             let lastEntry = newTranscript[newTranscript.length - 1];
-            
+
             if (!lastEntry || lastEntry.speaker !== 'user') {
                 newTranscript.push({
                     speaker: 'user',
@@ -767,7 +867,7 @@ Your response as the coach:`;
             else vocalClarityStateRef.current = 'poor';
             setTimeout(() => { vocalClarityStateRef.current = 'good'; }, 2000);
           }
-          
+
           const finalPhrase = event.results[event.results.length - 1][0].transcript.trim();
           currentUserSpeechRef.current += finalPhrase + ' ';
           currentUtteranceStartIndexRef.current = event.resultIndex + 1;
@@ -785,62 +885,45 @@ Your response as the coach:`;
                         getAiConversationalResponse(fullTurnText);
                     }
                 }
-            }, 1500);
+            }, getMobileOptimizedDelay());
           }
         }
       };
-      
-      recognition.onend = () => {
+
+      recognitionRef.current.onend = () => {
         if (isRecordingRef.current && !isAiSpeaking) {
           recognitionRef.current?.start();
         }
       };
-      
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+
+      recognitionRef.current.onerror = (event: SpeechRecognitionErrorEvent) => {
         console.error("Speech recognition error:", event.error);
+        setRecordingStatus('error');
 
         // Don't show alert for benign errors or when ending session
         if (event.error === 'no-speech' || isEnding) {
+          setRecordingStatus('idle');
           return;
         }
 
         const userFriendlyMessage = handleMobileSpeechRecognitionError(event.error);
-        alert(userFriendlyMessage);
 
         // For mobile devices, try to restart recognition after certain errors
         if (isMobileDevice() && (event.error === 'audio-capture' || event.error === 'not-allowed')) {
           setTimeout(() => {
             if (isRecordingRef.current && !isEnding) {
+              setRecordingStatus('idle');
               recognitionRef.current?.start();
+            } else {
+              setRecordingStatus('idle');
             }
           }, 2000);
+        } else {
+          setRecordingStatus('idle');
         }
       };
-
-      if (mode.startsWith('CONVERSATIONAL') && mode !== SessionMode.CONVERSATIONAL_WITH_DEMO) {
-        const aiGreeting: TranscriptEntry = {
-          speaker: 'ai',
-          words: analyzeText(`Hello! Welcome to your ${category} preparation. Let's begin. Tell me about yourself.`),
-          timestamp: new Date()
-        };
-        setTranscript([aiGreeting]);
-      } else {
-         setTranscript([{ speaker: 'user', words: [], timestamp: new Date() }]);
-      }
-
-    } catch (err) {
-      console.error("Error setting up session.", err);
-      alert("Could not access camera/microphone or failed to load resources. Please check permissions and refresh.");
     }
-  }, [category, mode, predictWebcam, isCameraEnabled, getAiConversationalResponse, getAiRephrasingResponse, isAiFeedbackEnabled]);
-  
-  useEffect(() => {
-      if (isRecording) {
-          recognitionRef.current?.start();
-      } else {
-          recognitionRef.current?.stop();
-      }
-  }, [isRecording]);
+  }, [isSpeechRecognitionReady, mode, isAiFeedbackEnabled, getAiConversationalResponse, getAiRephrasingResponse]);
 
   useEffect(() => {
     setupSession();
@@ -886,9 +969,21 @@ Your response as the coach:`;
     {isMobileDevice() && !isTourOpen && (
       <div className="fixed bottom-20 left-4 right-4 bg-blue-600/90 backdrop-blur-sm text-white p-3 rounded-lg shadow-lg z-50 text-sm">
         <div className="flex items-center space-x-2">
-          <MicIcon className="w-4 h-4 flex-shrink-0" />
+          <MicIcon className={`w-4 h-4 flex-shrink-0 ${recordingStatus === 'recording' ? 'animate-pulse text-red-300' : ''}`} />
           <span>
-            <strong>Mobile Tip:</strong> Tap the microphone button to start/stop recording. Allow microphone permissions when prompted.
+            {isWaitingForPermissions ? (
+              <>
+                <strong>Allow Microphone Access:</strong> Please tap "Allow" when your browser asks for microphone permissions.
+              </>
+            ) : recordingStatus === 'error' ? (
+              <>
+                <strong>Recording Error:</strong> Please check microphone permissions and try again.
+              </>
+            ) : (
+              <>
+                <strong>Mobile Tip:</strong> Tap the microphone button to start/stop recording. Speak clearly for best results.
+              </>
+            )}
           </span>
         </div>
       </div>
@@ -957,13 +1052,22 @@ Your response as the coach:`;
             </div>
             <div className="flex items-center space-x-2">
                 <Button
-                    onClick={() => setIsRecording(!isRecording)}
+                    onClick={isRecording ? stopRecording : startRecording}
                     className={`bg-white/10 hover:bg-white/20 ${isMobileDevice() ? 'touch-manipulation' : ''}`}
-                    disabled={isAiSpeaking || isEnding}
+                    disabled={isAiSpeaking || isEnding || recordingStatus === 'starting'}
                 >
-                    <MicIcon className={`mr-2 h-4 w-4 ${isRecording ? 'text-red-400 animate-pulse' : ''}`} />
+                    <MicIcon className={`mr-2 h-4 w-4 ${recordingStatus === 'recording' ? 'text-red-400 animate-pulse' : ''}`} />
                     <span className={isMobileDevice() ? 'text-sm' : ''}>
-                        {isAiSpeaking ? 'AI Speaking...' : (isRecording ? 'Recording...' : (isConversational ? 'Record Answer' : 'Start Speaking'))}
+                        {isAiSpeaking
+                            ? 'AI Speaking...'
+                            : recordingStatus === 'starting'
+                                ? 'Starting...'
+                                : recordingStatus === 'recording'
+                                    ? 'Recording...'
+                                    : isWaitingForPermissions
+                                        ? 'Allow Mic Access'
+                                        : (isConversational ? 'Record Answer' : 'Start Speaking')
+                        }
                     </span>
                 </Button>
                 <Button onClick={endSession} className="bg-red-500/50 hover:bg-red-500/70 text-white" disabled={isEnding}>
