@@ -309,118 +309,148 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
     }
+  }, []);
 
-    const { score, improvements, fillerWordCounts } = calculateScoresAndImprovements(transcript);
+  // Handle session analysis when ending
+  useEffect(() => {
+    if (isEnding && transcript.length > 0) {
+      const performAnalysis = async () => {
+        const { score, improvements, fillerWordCounts } = calculateScoresAndImprovements(transcript);
 
-    let postureFeedback = "Posture analysis was not enabled for this session.";
-    if (isCameraEnabled) {
-      if (isAiFeedbackEnabled) {
-        const totalReadings = postureReadingsRef.current.length;
-        if (totalReadings > 0) {
-          const goodReadings = postureReadingsRef.current.filter(r => r === 'good').length;
-          const goodPosturePercentage = Math.round((goodReadings / totalReadings) * 100);
-          if (goodPosturePercentage > 85) {
-            postureFeedback = `Excellent posture! You maintained a confident posture for ${goodPosturePercentage}% of the session.`;
-          } else if (goodPosturePercentage > 60) {
-            postureFeedback = `Good posture overall (${goodPosturePercentage}%). Try to keep your back straight and shoulders relaxed.`;
+        let postureFeedback = "Posture analysis was not enabled for this session.";
+        if (isCameraEnabled) {
+          if (isAiFeedbackEnabled) {
+            const totalReadings = postureReadingsRef.current.length;
+            if (totalReadings > 0) {
+              const goodReadings = postureReadingsRef.current.filter(r => r === 'good').length;
+              const goodPosturePercentage = Math.round((goodReadings / totalReadings) * 100);
+              if (goodPosturePercentage > 85) {
+                postureFeedback = `Excellent posture! You maintained a confident posture for ${goodPosturePercentage}% of the session.`;
+              } else if (goodPosturePercentage > 60) {
+                postureFeedback = `Good posture overall (${goodPosturePercentage}%). Try to keep your back straight and shoulders relaxed.`;
+              } else {
+                postureFeedback = `You were slouching for a significant part of the session (${100 - goodPosturePercentage}%). Focus on sitting upright to project more confidence.`;
+              }
+            } else {
+              postureFeedback = "Could not analyze posture.";
+            }
           } else {
-            postureFeedback = `You were slouching for a significant part of the session (${100 - goodPosturePercentage}%). Focus on sitting upright to project more confidence.`;
+            postureFeedback = "AI posture feedback was disabled for this session.";
           }
-        } else {
-          postureFeedback = "Could not analyze posture.";
         }
-      } else {
-        postureFeedback = "AI posture feedback was disabled for this session.";
-      }
-    }
 
-    const userTranscript = transcript.filter(t => t.speaker === 'user').map(t => t.words.map(w => w.text).join(' ')).join(' ');
-    
-    let toneFeedback = "Not enough speech was detected to analyze your tone.";
-    if (isAiFeedbackEnabled) {
-        if (userTranscript.trim().length > 10) { 
-        try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
-            const prompt = `You are an expert communication coach. Analyze the tone of the following transcript. Provide a single, concise sentence of feedback (maximum 25 words) with one piece of actionable advice. Transcript: "${userTranscript}"`;
-            const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            });
-            toneFeedback = response.text;
-        } catch (error) {
-            console.error("Error analyzing tone:", error);
-            if (error instanceof Error && (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found"))) {
-                onApiKeyInvalid();
-            }
-            toneFeedback = "Could not analyze tone due to an error.";
-        }
-        }
-    } else {
-        toneFeedback = "AI tone analysis was disabled for this session.";
-    }
+        const userTranscript = transcript.filter(t => t.speaker === 'user').map(t => t.words.map(w => w.text).join(' ')).join(' ');
 
-
-    const avgConfidence = confidenceScoresRef.current.length > 0 ? confidenceScoresRef.current.reduce((a, b) => a + b, 0) / confidenceScoresRef.current.length : 0;
-    const pronunciationScore = Math.round(avgConfidence * 100);
-    
-    let pronunciationFeedback = "Not enough speech was detected to analyze your pronunciation.";
-    if (isAiFeedbackEnabled) {
-        if (userTranscript.trim().length > 10) {
-        try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
-            const prompt = `You are an expert speech coach. Analyze the following transcript for pronunciation clarity. Provide one key area for improvement in a single, concise sentence (maximum 25 words). Transcript: "${userTranscript}"`;
-            const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            });
-            pronunciationFeedback = response.text;
-        } catch (error) {
-            console.error("Error analyzing pronunciation:", error);
-            if (error instanceof Error && (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found"))) {
-                onApiKeyInvalid();
-            }
-            pronunciationFeedback = "Could not analyze pronunciation due to an error.";
-        }
-        }
-    } else {
-        pronunciationFeedback = "AI pronunciation analysis was disabled for this session.";
-    }
-
-    let emotionFeedback = "Not enough speech was detected to analyze your emotions.";
-    if (isAiFeedbackEnabled) {
-        if (userTranscript.trim().length > 10) {
+        let toneFeedback = "Not enough speech was detected to analyze your tone.";
+        if (isAiFeedbackEnabled) {
+            if (userTranscript.trim().length > 10) {
             try {
                 const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
-                const prompt = `You are an AI specializing in emotional analysis. Analyze the following transcript. In one concise sentence (maximum 25 words), describe the primary emotion conveyed and how it impacts the message. Transcript: "${userTranscript}"`;
+                const prompt = `You are an expert communication coach. Analyze the tone of the following transcript. Provide a single, concise sentence of feedback (maximum 25 words) with one piece of actionable advice. Transcript: "${userTranscript}"`;
                 const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: prompt,
                 });
-                emotionFeedback = response.text;
+                toneFeedback = response.text;
             } catch (error) {
-                console.error("Error analyzing emotion:", error);
-                if (error instanceof Error && (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found"))) {
-                    onApiKeyInvalid();
+                console.error("Error analyzing tone:", error);
+                if (error instanceof Error) {
+                    if (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found")) {
+                        onApiKeyInvalid();
+                    } else if (error.message.includes("quota") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+                        toneFeedback = "Tone analysis unavailable due to API quota limits.";
+                    } else {
+                        toneFeedback = "Could not analyze tone due to an error.";
+                    }
+                } else {
+                    toneFeedback = "Could not analyze tone due to an error.";
                 }
-                emotionFeedback = "Could not analyze emotions due to an error.";
             }
+        } else {
+            toneFeedback = "AI tone analysis was disabled for this session.";
         }
-    } else {
-        emotionFeedback = "AI emotion analysis was disabled for this session.";
-    }
+        }
 
-    onSessionEnd({
-      score,
-      transcript: transcript.filter(t => t.words.length > 0 && t.words.some(w => w.text.trim() !== '')),
-      improvements,
-      postureFeedback,
-      toneFeedback,
-      fillerWordCounts,
-      pronunciationScore,
-      pronunciationFeedback,
-      emotionFeedback,
-    });
-  }, [transcript, onSessionEnd, category, isCameraEnabled, isAiFeedbackEnabled, isEnding, onApiKeyInvalid]);
+
+        const avgConfidence = confidenceScoresRef.current.length > 0 ? confidenceScoresRef.current.reduce((a, b) => a + b, 0) / confidenceScoresRef.current.length : 0;
+        const pronunciationScore = Math.round(avgConfidence * 100);
+
+        let pronunciationFeedback = "Not enough speech was detected to analyze your pronunciation.";
+        if (isAiFeedbackEnabled) {
+            if (userTranscript.trim().length > 10) {
+            try {
+                const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+                const prompt = `You are an expert speech coach. Analyze the following transcript for pronunciation clarity. Provide one key area for improvement in a single, concise sentence (maximum 25 words). Transcript: "${userTranscript}"`;
+                const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: prompt,
+                });
+                pronunciationFeedback = response.text;
+            } catch (error) {
+                console.error("Error analyzing pronunciation:", error);
+                if (error instanceof Error) {
+                    if (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found")) {
+                        onApiKeyInvalid();
+                    } else if (error.message.includes("quota") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+                        pronunciationFeedback = "Pronunciation analysis unavailable due to API quota limits.";
+                    } else {
+                        pronunciationFeedback = "Could not analyze pronunciation due to an error.";
+                    }
+                } else {
+                    pronunciationFeedback = "Could not analyze pronunciation due to an error.";
+                }
+            }
+        } else {
+            pronunciationFeedback = "AI pronunciation analysis was disabled for this session.";
+        }
+        }
+
+        let emotionFeedback = "Not enough speech was detected to analyze your emotions.";
+        if (isAiFeedbackEnabled) {
+            if (userTranscript.trim().length > 10) {
+                try {
+                    const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+                    const prompt = `You are an AI specializing in emotional analysis. Analyze the following transcript. In one concise sentence (maximum 25 words), describe the primary emotion conveyed and how it impacts the message. Transcript: "${userTranscript}"`;
+                    const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: prompt,
+                    });
+                    emotionFeedback = response.text;
+                } catch (error) {
+                    console.error("Error analyzing emotion:", error);
+                    if (error instanceof Error) {
+                        if (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found")) {
+                            onApiKeyInvalid();
+                        } else if (error.message.includes("quota") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+                            emotionFeedback = "Emotion analysis unavailable due to API quota limits.";
+                        } else {
+                            emotionFeedback = "Could not analyze emotions due to an error.";
+                        }
+                    } else {
+                        emotionFeedback = "Could not analyze emotions due to an error.";
+                    }
+                }
+            }
+        } else {
+            emotionFeedback = "AI emotion analysis was disabled for this session.";
+        }
+
+        onSessionEnd({
+          score,
+          transcript: transcript.filter(t => t.words.length > 0 && t.words.some(w => w.text.trim() !== '')),
+          improvements,
+          postureFeedback,
+          toneFeedback,
+          fillerWordCounts,
+          pronunciationScore,
+          pronunciationFeedback,
+          emotionFeedback,
+        });
+      };
+
+      performAnalysis();
+    }
+  }, [isEnding, transcript, onSessionEnd, category, isCameraEnabled, isAiFeedbackEnabled, onApiKeyInvalid]);
   
   const handleAiFailure = useCallback(() => {
     const errorEntry: TranscriptEntry = {
@@ -487,53 +517,95 @@ const SessionScreen: React.FC<SessionScreenProps> = ({ category, mode, onSession
             return;
         }
         
+      // Try Google TTS first, fall back to Web Speech API if quota exceeded
+      let audioPlayed = false;
+
+      try {
         const ttsResponse = await ai.models.generateContent({
-            model: "gemini-2.5-flash-preview-tts",
-            contents: [{ parts: [{ text: finalAiText }] }],
-            config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-            },
+          model: "gemini-2.5-flash-preview-tts",
+          contents: [{ parts: [{ text: finalAiText }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          },
         });
 
-        const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (!base64Audio || !outputAudioContextRef.current) {
-            console.error('AI audio generation failed.');
-            handleAiFailure();
-            return;
-        }
+        const base64Audio = ttsResponse?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (base64Audio && outputAudioContextRef.current) {
+          const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current, 24000, 1);
+          const source = outputAudioContextRef.current.createBufferSource();
+          source.buffer = audioBuffer;
 
-        const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current, 24000, 1);
-        const source = outputAudioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(outputAudioContextRef.current.destination);
+          // Mobile-specific audio optimizations
+          if (isMobileDevice()) {
+            const gainNode = outputAudioContextRef.current.createGain();
+            gainNode.gain.value = 0.7;
+            source.connect(gainNode);
+            gainNode.connect(outputAudioContextRef.current.destination);
+          } else {
+            source.connect(outputAudioContextRef.current.destination);
+          }
 
-        // Mobile-specific audio optimizations
-        if (isMobileDevice()) {
-          // Reduce volume on mobile devices to avoid distortion
-          const gainNode = outputAudioContextRef.current.createGain();
-          gainNode.gain.value = 0.7; // Reduce volume by 30%
-          source.connect(gainNode);
-          gainNode.connect(outputAudioContextRef.current.destination);
-        } else {
-          source.connect(outputAudioContextRef.current.destination);
-        }
+          source.start();
+          audioPlayed = true;
 
-        source.start();
-        source.onended = () => {
+          source.onended = () => {
             setIsAiSpeaking(false);
             isProcessingFinalResultRef.current = false;
             currentUserSpeechRef.current = '';
 
-            // Mobile-specific: shorter delay before restarting recording
             const delay = getMobileOptimizedDelay();
             setTimeout(() => {
-              // After AI speaks, it's the user's turn again.
               if (isRecordingRef.current === false) {
-                  setIsRecording(true);
+                setIsRecording(true);
               }
             }, delay);
-        };
+          };
+        }
+      } catch (error) {
+        console.error("Google TTS failed:", error);
+        if (error instanceof Error) {
+          if (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found")) {
+            onApiKeyInvalid();
+          } else if (error.message.includes("quota") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+            console.warn("Google TTS quota exceeded, falling back to Web Speech API");
+            audioPlayed = await useWebSpeechAPI(finalAiText);
+          } else {
+            console.warn("Google TTS error, falling back to Web Speech API");
+            audioPlayed = await useWebSpeechAPI(finalAiText);
+          }
+        } else {
+          console.warn("Google TTS error, falling back to Web Speech API");
+          audioPlayed = await useWebSpeechAPI(finalAiText);
+        }
+      }
+
+      // If no audio was played, at least show the text
+      if (!audioPlayed) {
+        setTranscript(prev => {
+          const newTranscript = [...prev];
+          const lastEntry = newTranscript[newTranscript.length - 1];
+          if (lastEntry && lastEntry.speaker === 'ai') {
+            newTranscript[newTranscript.length - 1] = {
+              ...lastEntry,
+              words: analyzeText(finalAiText),
+            };
+          }
+          return newTranscript;
+        });
+
+        setIsAiSpeaking(false);
+        setIsAiGeneratingText(false);
+        isProcessingFinalResultRef.current = false;
+
+        // Still restart recording after a delay
+        const delay = getMobileOptimizedDelay();
+        setTimeout(() => {
+          if (isRecordingRef.current === false) {
+            setIsRecording(true);
+          }
+        }, delay);
+      }
 
     } catch (error) {
         console.error("Error getting AI rephrasing response:", error);
@@ -603,58 +675,123 @@ Your response as the coach:`;
         return;
       }
 
-      const ttsResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: finalAiText }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-        },
-      });
+      // Try Google TTS first, fall back to Web Speech API if quota exceeded
+      let audioPlayed = false;
 
-      const base64Audio = ttsResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      try {
+        const ttsResponse = await ai.models.generateContent({
+          model: "gemini-2.5-flash-preview-tts",
+          contents: [{ parts: [{ text: finalAiText }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          },
+        });
 
-      if (!base64Audio || !outputAudioContextRef.current) {
-        console.error('AI audio generation failed.');
-        handleAiFailure();
-        return;
+        const base64Audio = ttsResponse?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (base64Audio && outputAudioContextRef.current) {
+          const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current, 24000, 1);
+          const source = outputAudioContextRef.current.createBufferSource();
+          source.buffer = audioBuffer;
+
+          // Mobile-specific audio optimizations
+          if (isMobileDevice()) {
+            const gainNode = outputAudioContextRef.current.createGain();
+            gainNode.gain.value = 0.7;
+            source.connect(gainNode);
+            gainNode.connect(outputAudioContextRef.current.destination);
+          } else {
+            source.connect(outputAudioContextRef.current.destination);
+          }
+
+          source.start();
+          audioPlayed = true;
+
+          source.onended = () => {
+            setIsAiSpeaking(false);
+            isProcessingFinalResultRef.current = false;
+            currentUserSpeechRef.current = '';
+
+            const delay = getMobileOptimizedDelay();
+            setTimeout(() => {
+              if (isRecordingRef.current === false) {
+                setIsRecording(true);
+              }
+            }, delay);
+          };
+        }
+      } catch (error) {
+        console.error("Google TTS failed:", error);
+        if (error instanceof Error) {
+          if (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found")) {
+            onApiKeyInvalid();
+          } else if (error.message.includes("quota") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+            console.warn("Google TTS quota exceeded, falling back to Web Speech API");
+            audioPlayed = await useWebSpeechAPI(finalAiText);
+          } else {
+            console.warn("Google TTS error, falling back to Web Speech API");
+            audioPlayed = await useWebSpeechAPI(finalAiText);
+          }
+        } else {
+          console.warn("Google TTS error, falling back to Web Speech API");
+          audioPlayed = await useWebSpeechAPI(finalAiText);
+        }
       }
 
-      const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current, 24000, 1);
-      const source = outputAudioContextRef.current.createBufferSource();
-      source.buffer = audioBuffer;
+      // If no audio was played, at least show the text
+      if (!audioPlayed) {
+        setTranscript(prev => {
+          const newTranscript = [...prev];
+          const lastEntry = newTranscript[newTranscript.length - 1];
+          if (lastEntry && lastEntry.speaker === 'ai') {
+            newTranscript[newTranscript.length - 1] = {
+              ...lastEntry,
+              words: analyzeText(finalAiText),
+            };
+          }
+          return newTranscript;
+        });
 
-      // Mobile-specific audio optimizations
-      if (isMobileDevice()) {
-        // Reduce volume on mobile devices to avoid distortion
-        const gainNode = outputAudioContextRef.current.createGain();
-        gainNode.gain.value = 0.7; // Reduce volume by 30%
-        source.connect(gainNode);
-        gainNode.connect(outputAudioContextRef.current.destination);
-      } else {
-        source.connect(outputAudioContextRef.current.destination);
-      }
-
-      source.start();
-      source.onended = () => {
         setIsAiSpeaking(false);
+        setIsAiGeneratingText(false);
         isProcessingFinalResultRef.current = false;
-        currentUserSpeechRef.current = '';
 
-        // Mobile-specific: shorter delay before restarting recording
+        // Still restart recording after a delay
         const delay = getMobileOptimizedDelay();
         setTimeout(() => {
-          // After AI speaks, it's the user's turn. Start recording if the session is still active.
           if (isRecordingRef.current === false) {
-             setIsRecording(true);
+            setIsRecording(true);
           }
         }, delay);
-      };
+      }
 
     } catch (error) {
       console.error("Error getting AI conversational response:", error);
-      if (error instanceof Error && (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found"))) {
-        onApiKeyInvalid();
+      if (error instanceof Error) {
+        if (error.message.includes("API key not valid") || error.message.includes("Requested entity was not found")) {
+          onApiKeyInvalid();
+        } else if (error.message.includes("quota") || error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+          // Handle quota exceeded error
+          const quotaErrorEntry: TranscriptEntry = {
+            speaker: 'ai',
+            words: analyzeText("I've reached my daily API limit. Please wait until tomorrow for the quota to reset, or upgrade to a paid plan for higher limits."),
+            timestamp: new Date()
+          };
+          setTranscript(prev => {
+            const newTranscript = [...prev];
+            const lastEntry = newTranscript[newTranscript.length - 1];
+            if (lastEntry && lastEntry.speaker === 'ai' && lastEntry.words.length === 0) {
+              newTranscript[newTranscript.length - 1] = quotaErrorEntry;
+            } else {
+              newTranscript.push(quotaErrorEntry);
+            }
+            return newTranscript;
+          });
+          setIsAiSpeaking(false);
+          setIsAiGeneratingText(false);
+          isProcessingFinalResultRef.current = false;
+          return;
+        }
       }
       setIsAiGeneratingText(false);
       handleAiFailure();
@@ -862,6 +999,69 @@ Your response as the coach:`;
       }
     };
   }, [setupSession]);
+
+  // Web Speech API fallback for TTS
+  const useWebSpeechAPI = async (text: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (!('speechSynthesis' in window)) {
+        console.warn('Web Speech API not supported');
+        resolve(false);
+        return;
+      }
+
+      // Cancel any ongoing speech
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+
+      // Configure voice settings
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      utterance.volume = 0.8;
+
+      // Try to use a female voice if available
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = voices.find(voice =>
+        voice.lang.startsWith('en') &&
+        (voice.name.toLowerCase().includes('female') ||
+         voice.name.toLowerCase().includes('woman') ||
+         voice.name.toLowerCase().includes('zira') ||
+         voice.name.toLowerCase().includes('hazel'))
+      );
+
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      }
+
+      utterance.onstart = () => {
+        setIsAiSpeaking(true);
+      };
+
+      utterance.onend = () => {
+        setIsAiSpeaking(false);
+        isProcessingFinalResultRef.current = false;
+        currentUserSpeechRef.current = '';
+
+        const delay = getMobileOptimizedDelay();
+        setTimeout(() => {
+          if (isRecordingRef.current === false) {
+            setIsRecording(true);
+          }
+        }, delay);
+        resolve(true);
+      };
+
+      utterance.onerror = (error) => {
+        console.error('Web Speech API error:', error);
+        setIsAiSpeaking(false);
+        isProcessingFinalResultRef.current = false;
+        resolve(false);
+      };
+
+      // Speak the text
+      window.speechSynthesis.speak(utterance);
+    });
+  };
 
   const getWordClass = (category: WordCategory) => {
     switch (category) {
